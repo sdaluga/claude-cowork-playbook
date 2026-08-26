@@ -180,7 +180,8 @@ Also: multi-tenant isolation, health vs. readiness, graceful shutdown, and **fai
 
 > ### 🪤 The trap that breaks agent containers in CI
 > ```dockerfile
-> RUN npm ci        # NOT npm ci --omit=optional
+> RUN npm install   # or `npm ci` with a committed lockfile
+>                   # NEVER either one with --omit=optional
 > ```
 > The TypeScript SDK ships its bundled Claude Code binary through **npm optional dependencies**. Omit them and you get a container that installs cleanly, builds cleanly, and fails at the first `query()` call. It looks like a harmless image-size optimisation. It isn't.
 
