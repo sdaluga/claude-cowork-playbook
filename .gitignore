@@ -1,0 +1,43 @@
+# --- secrets: never, ever ---------------------------------------------------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- agent output -----------------------------------------------------------
+# Every example writes into its own output/ directory. Those are run
+# artifacts, not source. The audit log in particular can contain document
+# content, so it must never reach a public remote.
+output/
+**/output/
+*.jsonl
+
+# --- python -----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# --- node -------------------------------------------------------------------
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+
+# --- claude -----------------------------------------------------------------
+# Local session transcripts and config. Machine-specific and often large.
+.claude/
+!.claude/skills/
+
+# --- editors / os -----------------------------------------------------------
+.DS_Store
+.idea/
+.vscode/
+*.swp
