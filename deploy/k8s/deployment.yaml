@@ -1,0 +1,276 @@
+# =============================================================================
+# Kubernetes manifests — Claude Agent SDK service
+# =============================================================================
+#
+# Every unusual choice in this file traces back to one fact: the SDK spawns a
+# `claude` CLI subprocess per session, and that subprocess holds memory, a
+# working directory, and a transcript on local disk.
+#
+# That makes an agent pod stateful-ish in ways a normal web pod is not:
+#   • memory is the scaling bound, not CPU
+#   • sessions are sticky, so routing must be session-affine
+#   • local disk is scratch, so durable transcripts need a SessionStore
+#   • termination needs a real grace period, not the default rush
+#
+#   kubectl create secret generic anthropic --from-literal=api-key=sk-ant-...
+#   kubectl apply -f deploy/k8s/deployment.yaml
+# =============================================================================
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: triage-config
+data:
+  PORT: "8080"
+
+  # ---- The number that matters -----------------------------------------------
+  # agents per pod = (pod RAM - overhead) / per-session RAM ceiling
+  #
+  # Measure the ceiling: run a representative session to your target length,
+  # under your real tool load, and record peak RSS. 1 GiB is a documented
+  # FLOOR, not a ceiling. Setting this to 8 on a 4Gi pod does not give you
+  # eight agents; it gives you OOMKilled.
+  MAX_CONCURRENT: "3"
+
+  CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+  CLAUDE_CODE_ENHANCED_TELEMETRY_BETA: "1"
+  OTEL_TRACES_EXPORTER: "otlp"
+  OTEL_METRICS_EXPORTER: "otlp"
+  OTEL_LOGS_EXPORTER: "otlp"
+  OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf"
+  OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.observability:4318"
+
+  # Multi-tenant hygiene, belt-and-braces alongside the in-code settings.
+  CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: inbox-triage
+  labels:
+    app: inbox-triage
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: inbox-triage
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      # Zero unavailable: a rolling update should never take capacity away
+      # while long-running agent sessions are in flight.
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: inbox-triage
+    spec:
+      # Long, because in-flight agent work is expensive to throw away. The
+      # server catches SIGTERM, stops accepting connections, and drains.
+      terminationGracePeriodSeconds: 120
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: triage
+          image: ghcr.io/OWNER/inbox-triage:latest   # <-- change me
+          imagePullPolicy: IfNotPresent
+
+          ports:
+            - name: http
+              containerPort: 8080
+
+          envFrom:
+            - configMapRef:
+                name: triage-config
+
+          env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: anthropic
+                  key: api-key
+
+          resources:
+            requests:
+              # Request close to the limit. Agent memory is lumpy -- a session
+              # that grows mid-run on a burstable pod gets evicted, and you
+              # lose work you have already paid tokens for.
+              memory: "3Gi"
+              cpu: "1000m"
+            limits:
+              memory: "4Gi"
+              cpu: "2000m"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          # readOnlyRootFilesystem means every writable path must be declared.
+          # The agent needs three: its working directories, its config dir,
+          # and /tmp.
+          volumeMounts:
+            - name: agent-work
+              mountPath: /tmp/claude-work
+            - name: agent-config
+              mountPath: /tmp/claude-config
+            - name: tmp
+              mountPath: /tmp/scratch
+
+          # Liveness must NOT depend on a downstream service, or one slow
+          # dependency turns into a cluster-wide restart loop.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          # Readiness returns 503 when the semaphore is saturated, so the
+          # Service stops sending new work to a pod that is already full.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+
+          # The Node process starts fast, but give the runtime room on a cold
+          # node before liveness starts counting failures.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 3
+            failureThreshold: 20
+
+      volumes:
+        # emptyDir, not a PVC: this is scratch. Transcripts that must survive
+        # a pod move belong in a SessionStore (S3 / Redis / Postgres), not on
+        # a volume you have to keep alive.
+        - name: agent-work
+          emptyDir:
+            sizeLimit: 5Gi
+        - name: agent-config
+          emptyDir:
+            sizeLimit: 1Gi
+        - name: tmp
+          emptyDir:
+            sizeLimit: 1Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: inbox-triage
+spec:
+  selector:
+    app: inbox-triage
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+
+  # ---- Session affinity ------------------------------------------------------
+  # A resumed session must land on the pod that holds its subprocess. ClientIP
+  # affinity is the crude version and works when callers are stable.
+  #
+  # The better version is consistent hashing on the session id at your
+  # ingress, so routing follows the SESSION rather than the caller. With an
+  # NGINX ingress:
+  #     nginx.ingress.kubernetes.io/upstream-hash-by: "$arg_sessionId"
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 3600
+
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: inbox-triage
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: inbox-triage
+  minReplicas: 3
+  maxReplicas: 20
+  metrics:
+    # Scale on MEMORY. CPU is a poor proxy for agent load: an agent waiting on
+    # a model response uses almost no CPU while holding its full working set.
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Slow scale-down. Removing a pod kills the sessions pinned to it, so
+      # you want to be sure the load has really gone before shedding capacity.
+      stabilizationWindowSeconds: 600
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: inbox-triage
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: inbox-triage
+
+---
+# ---- Egress control ---------------------------------------------------------
+# The agent needs outbound HTTPS to api.anthropic.com (or your regional
+# provider endpoint) and to any MCP servers it uses. Nothing else.
+#
+# In production, route egress through a proxy that enforces a domain
+# allowlist, injects credentials outside the container, and logs requests --
+# a NetworkPolicy alone cannot do domain-level filtering.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inbox-triage-egress
+spec:
+  podSelector:
+    matchLabels:
+      app: inbox-triage
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 4318
+    - ports:
+        - protocol: TCP
+          port: 443
