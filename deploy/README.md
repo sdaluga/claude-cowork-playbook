@@ -57,7 +57,8 @@ Practical consequence: optimising your container bin-packing before you've looke
 In the Dockerfile:
 
 ```dockerfile
-RUN npm ci        # NOT npm ci --omit=optional
+RUN npm install   # or `npm ci` with a committed lockfile
+                  # NEVER either one with --omit=optional
 ```
 
 The TypeScript SDK ships its bundled Claude Code binary through **npm optional dependencies**. Omit them and you get a container that installs cleanly, builds cleanly, and fails at the first `query()` call with a missing-executable error.

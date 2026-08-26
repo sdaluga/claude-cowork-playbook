@@ -30,14 +30,16 @@ WORKDIR /app
 # Copy manifests first so the dependency layer caches independently of source.
 COPY examples/03-inbox-triage-service/package*.json ./
 
-# `npm ci` for reproducibility.
+# This example ships without a committed package-lock.json so readers always
+# resolve current SDK versions, hence `npm install`. In your own project,
+# commit the lockfile and use `npm ci` for reproducible builds.
 #
-# IMPORTANT: do NOT add `--omit=optional`. The TypeScript SDK ships its bundled
-# Claude Code binary through npm OPTIONAL dependencies. Omit them and you get a
-# container that installs cleanly, builds cleanly, and fails at the first
-# query() call with a missing-executable error. This is the single most common
-# way an agent container breaks in CI.
-RUN npm ci
+# IMPORTANT, either way: do NOT add `--omit=optional`. The TypeScript SDK ships
+# its bundled Claude Code binary through npm OPTIONAL dependencies. Omit them
+# and you get a container that installs cleanly, builds cleanly, and fails at
+# the first query() call with a missing-executable error. This is the single
+# most common way an agent container breaks in CI.
+RUN npm install --no-audit --no-fund
 
 COPY examples/03-inbox-triage-service/tsconfig.json ./
 COPY examples/03-inbox-triage-service/src ./src
@@ -59,7 +61,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY examples/03-inbox-triage-service/package*.json ./
-RUN npm ci --omit=dev && npm cache clean --force
+RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
 COPY --from=build /app/dist ./dist
 
