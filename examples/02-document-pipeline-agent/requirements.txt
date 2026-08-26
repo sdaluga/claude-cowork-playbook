@@ -1,1 +1,7 @@
 claude-agent-sdk>=0.2.140
+
+# Tests only. `python -m pytest tests/ -v` runs the 38 defense tests without
+# an API key and without calling a model. No pytest-asyncio needed -- the
+# tests wrap their own event loop.
+pytest>=8.0
+
