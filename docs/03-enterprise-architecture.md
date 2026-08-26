@@ -106,7 +106,7 @@ flowchart LR
     style Trusted fill:#0d2818,stroke:#238636,stroke-width:2px
 ```
 
-A PDF a vendor sent you is exactly as trustworthy as a string in a URL parameter. It can contain text addressed to your agent. [Example 02](../examples/02-document-pipeline-agent/) ships a real one — `sample_documents/invoice-c.txt` contains a live injection attempt — so you can run the defence rather than take its word for it.
+A PDF a vendor sent you is exactly as trustworthy as a string in a URL parameter. It can contain text addressed to your agent. [Example 02](../examples/02-document-pipeline-agent/) ships a real one — `sample_documents/invoice-03-halcyon.txt` contains a live injection attempt, and 38 tests prove the deterministic layers hold — so you can run the defence rather than take its word for it.
 
 Three independent layers have to fail before it does anything:
 

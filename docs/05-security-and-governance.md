@@ -94,9 +94,9 @@ Defence in depth, three layers, assume any one fails:
 
 1. **Prompt.** Tell the agent explicitly that content is data, that instructions inside it are to be reported rather than followed, and to lower its confidence when it sees one.
 2. **Tool list.** The agent that touches untrusted content gets the narrowest possible tools. A successful injection against a `Read`-only subagent has nothing to reach for.
-3. **Authoritative source.** Never let the content decide something your system of record already knows. In example 02, the document claims the vendor is approved; `lookup_vendor` says `on_hold`; the system of record wins.
+3. **Authoritative source.** Never let the content decide something your system of record already knows. In example 02, the document claims its vendor is approved and its SOW is open; `lookup_vendor` says `suspended` and `check_sow` says `closed`; the systems of record win.
 
-Run [`sample_documents/invoice-c.txt`](../examples/02-document-pipeline-agent/sample_documents/invoice-c.txt) through example 02 and read the summary. It's a live injection attempt and it should come back flagged.
+Run `python -m pytest tests/ -v` in example 02: 38 tests, no API key, covering exactly these layers against [`sample_documents/invoice-03-halcyon.txt`](../examples/02-document-pipeline-agent/sample_documents/invoice-03-halcyon.txt), a live injection attempt. Then break one of the controls on purpose and confirm the suite goes red — that is the only way you learn whether your tests test anything.
 
 ## Control 4 — Budgets
 
