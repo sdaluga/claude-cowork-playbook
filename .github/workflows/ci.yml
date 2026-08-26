@@ -1,0 +1,124 @@
+# =============================================================================
+# CI — keep the examples honest
+# =============================================================================
+# The point of CI on a teaching repo is not test coverage. It is making sure
+# that someone who clones this on a Tuesday can actually run it. So we check
+# the three things that break first: syntax, types, and the container build.
+#
+# We deliberately do NOT run the agents in CI. They would need an API key and
+# would spend money on every push. Agent behaviour is validated by running the
+# examples, which is what the READMEs walk you through.
+# =============================================================================
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install tooling
+        run: pip install ruff
+
+      # Syntax + import correctness across every example.
+      - name: Compile
+        run: python -m compileall -q examples/
+
+      - name: Lint
+        run: ruff check examples/ --select E9,F63,F7,F82,F401 --ignore E501
+
+      # Catches the classic "I renamed a function and forgot the caller".
+      - name: Import check
+        working-directory: examples/02-document-pipeline-agent
+        run: |
+          pip install claude-agent-sdk
+          python -c "import tools, hooks; print('tools + hooks import cleanly')"
+
+  typescript:
+    name: TypeScript service
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/03-inbox-triage-service
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: examples/03-inbox-triage-service/package-lock.json
+
+      # NOTE: plain `npm ci`. Never add --omit=optional here: the SDK ships
+      # its bundled Claude Code binary through optional dependencies, and
+      # omitting them produces a build that passes CI and fails at runtime.
+      - name: Install
+        run: npm ci || npm install
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+  container:
+    name: Container build
+    runs-on: ubuntu-latest
+    needs: typescript
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Build only. Pushing is left to the repo owner's release workflow so a
+      # fork's CI never tries to publish.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          tags: inbox-triage:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docs:
+    name: Docs links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A broken relative link in a README is the most common way a teaching
+      # repo silently rots. Cheap to check, annoying to find by hand.
+      - name: Check relative links
+        run: |
+          fail=0
+          while IFS= read -r -d '' file; do
+            dir=$(dirname "$file")
+            grep -oE '\]\(([^)#:]+)\)' "$file" | sed -E 's/^\]\(//; s/\)$//' | while read -r link; do
+              case "$link" in
+                http*|mailto:*|"") continue ;;
+              esac
+              target="$dir/${link%%#*}"
+              if [ ! -e "$target" ]; then
+                echo "BROKEN  $file  ->  $link"
+                exit 1
+              fi
+            done || fail=1
+          done < <(find . -name '*.md' -not -path './node_modules/*' -print0)
+          exit $fail
