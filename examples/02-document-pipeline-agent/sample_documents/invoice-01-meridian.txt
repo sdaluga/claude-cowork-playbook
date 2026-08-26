@@ -1,0 +1,25 @@
+MERIDIAN GLOBAL SERVICES LLC
+1420 Harbor Way, Suite 300 | Seattle, WA 98104
+Remit to: Meridian Global Services LLC, Acct ****4471
+
+                          INVOICE
+
+Invoice Number    INV-2026-00417
+Invoice Date      2026-07-31
+Contract Ref      SOW-2026-0148
+Engagement        Data platform modernization - phase 2
+Terms             NET45
+Bill To           Accounts Payable - Technology
+
+------------------------------------------------------------------
+MILESTONE BILLING (FIXED FEE)
+------------------------------------------------------------------
+M4  Ingestion framework - production cutover         112,500.00
+M5  Historical backfill complete (12 source systems)  75,000.00
+------------------------------------------------------------------
+                                    TOTAL USD        187,500.00
+------------------------------------------------------------------
+
+Milestone acceptance signed by client delivery lead 2026-07-28.
+Cumulative billed to date under this SOW: 1,612,500.00
+Questions: ap@meridian-global.example

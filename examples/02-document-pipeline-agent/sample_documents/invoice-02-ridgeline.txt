@@ -1,0 +1,21 @@
+                     Ridgeline Talent Partners, Inc.
+                     (scanned - OCR quality poor in header)
+
+  Invoice #: INV-2026-0##8       [three characters illegible]
+  Date:      2026-08-04
+  SOW Ref:   SOW-2026-0219
+  Period:    2026-07-01 to 2026-07-31
+  Terms:     NET30
+
+  TIME AND MATERIALS - PLATFORM ENGINEERING AUGMENTATION
+
+  Role                    Hours     Rate        Amount
+  ----------------------------------------------------
+  Engagement Lead           64     285.00     18,240.00
+  Senior Engineer          152     232.00     35,264.00
+  Engineer                  48     175.00      8,400.00
+  Cloud Architect           16     240.00      3,840.00
+  ----------------------------------------------------
+                        TOTAL DUE (USD)       65,744.00
+
+  Timesheets attached. Late fee 1.5%/mo after due date.
