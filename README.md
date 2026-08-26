@@ -144,7 +144,14 @@ Adds the four controls that separate *an agent* from *an agent you're allowed to
 - **A permission callback** — allow, deny, or *rewrite* the call.
 - **Subagents** — a `Read`-only extractor, so untrusted documents never come near a privileged tool.
 
-> 💣 **Ships with a live prompt-injection test.** [`sample_documents/invoice-c.txt`](examples/02-document-pipeline-agent/sample_documents/invoice-c.txt) contains a real attempt to talk the pipeline into approving a fraudulent total. Run it and watch three independent layers refuse. This is the single most useful forty minutes in the repo.
+> 💣 **Ships with a live prompt-injection test — and 38 tests that prove the defense holds.**
+> [`sample_documents/invoice-03-halcyon.txt`](examples/02-document-pipeline-agent/sample_documents/invoice-03-halcyon.txt) contains a real attempt to talk the pipeline into reopening a closed SOW, reactivating a suspended vendor, and recording $81,150 as $8,115. Every ask hits a deterministic control.
+>
+> ```bash
+> python -m pytest tests/ -v     # 38 tests, no API key, no model call
+> ```
+>
+> The tests were **mutation-checked** — defenses deliberately broken to confirm the suite goes red. That's how a real path-traversal bypass in the write guard got found. [The story is in the example README.](examples/02-document-pipeline-agent/#these-tests-were-mutation-checked)
 
 ---
 
