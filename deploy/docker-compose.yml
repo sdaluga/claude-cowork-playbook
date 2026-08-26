@@ -1,0 +1,96 @@
+# =============================================================================
+# docker-compose — local end-to-end run of the triage service
+# =============================================================================
+#
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   docker compose -f deploy/docker-compose.yml up --build
+#
+#   curl -s localhost:8080/triage -H 'content-type: application/json' -d '{
+#     "sessionId":"thread-1","from":"a@b.example",
+#     "subject":"Blocked","body":"Pilot users cannot log in, go-live Thursday."
+#   }' | jq
+#
+# Start the optional collector too, to watch the agent's telemetry:
+#   docker compose -f deploy/docker-compose.yml --profile observability up --build
+# =============================================================================
+
+services:
+  triage:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: inbox-triage:local
+    ports:
+      - "8080:8080"
+
+    environment:
+      # Passed through from your shell. Never commit a key into this file.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in your shell}
+      PORT: "8080"
+
+      # Concurrency is a MEMORY bound, not a throughput knob. Keep this in
+      # step with the memory limit below: roughly 1 GiB per concurrent agent
+      # as a floor, measured against your real session length and tool load.
+      MAX_CONCURRENT: "3"
+
+      # Telemetry — on when you run the observability profile.
+      CLAUDE_CODE_ENABLE_TELEMETRY: ${CLAUDE_CODE_ENABLE_TELEMETRY:-0}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_TRACES_EXPORTER: otlp
+      OTEL_METRICS_EXPORTER: otlp
+      OTEL_LOGS_EXPORTER: otlp
+
+    # Session transcripts and per-tenant working directories live here. In
+    # compose this is a named volume so a `docker compose restart` keeps them.
+    # In production, local disk is NOT durable -- use a SessionStore adapter.
+    volumes:
+      - agent-scratch:/tmp/claude-work
+      - agent-config:/tmp/claude-config
+
+    deploy:
+      resources:
+        limits:
+          # 3 concurrent agents x ~1 GiB + headroom for the Node process.
+          memory: 4g
+          cpus: "2.0"
+
+    # The agent forks subprocesses. Without a PID ceiling, a runaway loop can
+    # exhaust the host's process table rather than just this container's.
+    pids_limit: 512
+
+    # Writable /tmp is required -- it holds cwd and CLAUDE_CONFIG_DIR.
+    # read_only on the root filesystem plus a tmpfs is a reasonable hardening
+    # step once you have confirmed nothing else writes outside /tmp.
+    security_opt:
+      - no-new-privileges:true
+
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Optional OpenTelemetry collector.
+  # Run with:  docker compose --profile observability up
+  # ---------------------------------------------------------------------------
+  collector:
+    profiles: ["observability"]
+    image: otel/opentelemetry-collector-contrib:latest
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel-collector.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "4318:4318"   # OTLP/HTTP
+
+volumes:
+  agent-scratch:
+  agent-config:
