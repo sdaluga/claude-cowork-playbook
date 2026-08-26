@@ -42,12 +42,15 @@ jobs:
       - name: Lint
         run: ruff check examples/ --select E9,F63,F7,F82,F401 --ignore E501
 
-      # Catches the classic "I renamed a function and forgot the caller".
-      - name: Import check
+      # The defense tests. These are the reason the README's prompt-injection
+      # claim is worth anything: they assert that the deterministic layers --
+      # tool isolation, the write guard, and the system-of-record override --
+      # hold regardless of what the model does. No API key, no model call.
+      - name: Defense tests (example 02)
         working-directory: examples/02-document-pipeline-agent
         run: |
-          pip install claude-agent-sdk
-          python -c "import tools, hooks; print('tools + hooks import cleanly')"
+          pip install -r requirements.txt
+          python -m pytest tests/ -v
 
   typescript:
     name: TypeScript service
