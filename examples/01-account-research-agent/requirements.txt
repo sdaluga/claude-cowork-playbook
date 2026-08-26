@@ -1,0 +1,5 @@
+# Claude Agent SDK for Python.
+# Bundles a native Claude Code binary on most platforms, so there is usually
+# nothing else to install. See the note in the repo README if pip installs the
+# source distribution instead of a platform wheel (e.g. ARM64 Windows).
+claude-agent-sdk>=0.2.140
