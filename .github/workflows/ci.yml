@@ -61,14 +61,17 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-          cache: npm
-          cache-dependency-path: examples/03-inbox-triage-service/package-lock.json
+      # No dependency cache here on purpose: this example ships without a
+      # committed package-lock.json so readers always resolve current SDK
+      # versions. setup-node's npm cache requires a lockfile, so enabling it
+      # fails the job before install even runs.
 
-      # NOTE: plain `npm ci`. Never add --omit=optional here: the SDK ships
-      # its bundled Claude Code binary through optional dependencies, and
-      # omitting them produces a build that passes CI and fails at runtime.
+      # NOTE: `npm install`, and in a real project with a lockfile, `npm ci`.
+      # Never add --omit=optional to either: the TypeScript SDK ships its
+      # bundled Claude Code binary through optional dependencies, and omitting
+      # them produces a build that passes CI and fails at the first query().
       - name: Install
-        run: npm ci || npm install
+        run: npm install --no-audit --no-fund
 
       - name: Typecheck
         run: npm run typecheck
