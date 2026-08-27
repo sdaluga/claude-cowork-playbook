@@ -8,7 +8,7 @@ change is "does it make someone faster or safer", not "is it clever".
 1. **Working examples in other domains.** Legal, healthcare, finance ops,
    research, support. The scaffolding here is deliberately generic; a real
    example from your world is worth more than another abstraction.
-2. **`SessionStore` adapters.** S3, Redis, Postgres, or something stranger.
+2. **`SessionStore` backends.** The contract logic is done — `examples/03-inbox-triage-service/src/session-store.ts` implements it once against a five-method `BlobBackend` seam and ships a mounted-volume backend. S3, Postgres and Redis are five methods each, and the mappings (including the Postgres DDL) are already written at the bottom of that file. Bring tests: the existing 33 are named for the mistake each one prevents, and a new backend should pass the same ones.
 3. **Corrections.** Docs move. If something here has drifted from the official
    documentation, that's a bug — open an issue with the doc link.
 4. **Failure stories.** A short doc on how an agent broke in production, and

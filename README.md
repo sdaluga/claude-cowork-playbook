@@ -169,15 +169,15 @@ This is where hosting gets real, and it all follows from **one fact**: the SDK s
 | Consequence | What it forces |
 |---|---|
 | One session = one subprocess | Concurrency is a **RAM** bound, not an event-loop bound |
-| Local disk is ephemeral | Anything resumable needs a `SessionStore` |
+| Local disk is ephemeral | Anything resumable needs a `SessionStore` — [there's a working one in the repo](examples/03-inbox-triage-service/src/session-store.ts) |
 | Sessions are sticky | Consistent hashing on `sessionId` at the load balancer |
 
 Also: multi-tenant isolation, health vs. readiness, graceful shutdown, and **failing safe rather than closed** — an unparseable response becomes a human's queue item, never a swallowed message.
 
-> 🧪 **53 tests that fail when you delete a security control.**
+> 🧪 **86 tests that fail when you delete a control.**
 >
 > ```bash
-> npm test     # 53 tests, ~1s, no API key, no model call
+> npm test     # 86 tests, ~2s, no API key, no model call
 > ```
 >
 > The model call is one small file; everything that must be correct *regardless of what the model says* is pure and tested. Every assertion pins a line a future reader would reasonably delete — the empty tool allow list, `settingSources: []`, the auto-memory flag, the per-tenant paths, `needs_human` defaulting to `true`, the concurrency bound. **Mutation checked:** each control was broken in turn and the suite confirmed to go red. Writing them found a real bug in the session-id sanitiser. [The details are in the example README.](examples/03-inbox-triage-service/#the-tests-and-what-they-are-actually-for)
@@ -209,7 +209,7 @@ Also: multi-tenant isolation, health vs. readiness, graceful shutdown, and **fai
 3. **`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` matters** — auto memory loads into the system prompt *regardless of `settingSources`*.
 4. **TypeScript `env` replaces the subprocess environment; Python `env` merges.** Get it backwards in TS and you silently drop `PATH` and your API key.
 5. **claude.ai skill uploads accept exactly six frontmatter fields.** Anything else is a hard error, not a warning.
-6. **`SessionStore` mirrors transcripts only** — not `CLAUDE.md`, not working-directory artifacts.
+6. **`SessionStore` mirrors transcripts only** — not `CLAUDE.md`, not working-directory artifacts. The SDK ships one implementation and it's in-memory, so the durable one is yours to write. [This repo has it, with the six contract details that are easy to get wrong.](examples/03-inbox-triage-service/#the-adapter-in-srcsession-storets)
 7. **Mirror writes are best-effort.** A dropped batch emits `mirror_error` and the query continues. Alert on it.
 8. **Scale agents on memory, not CPU.** An agent waiting on a model response uses almost no CPU while holding its full working set.
 9. **Cowork's "Automatically approve" consumes more usage** than the other modes, because the safety checks cost compute.
@@ -244,7 +244,7 @@ claude-cowork-playbook/
 │       ├── src/semaphore.ts         #   the RAM bound · pure, tested
 │       ├── src/agent.ts             #   prompts and the query() call
 │       ├── src/server.ts            #   health/ready, graceful stop
-│       ├── tests/                   #   53 control tests, mutation checked
+│       ├── tests/                   #   86 control tests, mutation checked
 │       ├── package.json
 │       └── README.md
 │
@@ -287,7 +287,7 @@ flowchart TD
 
 ## Contributing
 
-Issues and PRs welcome — especially working examples in other domains, `SessionStore` adapters, and corrections. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Issues and PRs welcome — especially working examples in other domains, `SessionStore` backends (S3, Postgres and Redis are five methods each — [the seam and the mappings are documented](examples/03-inbox-triage-service/src/session-store.ts)), and corrections. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Found this useful? ⭐ Star it** — it's the signal that tells me which parts to go deeper on.
 
