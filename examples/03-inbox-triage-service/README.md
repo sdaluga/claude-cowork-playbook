@@ -67,10 +67,14 @@ Hosting the Agent SDK is therefore **not** like hosting a stateless API wrapper.
                  │                       │                      │
                  │                       ▼                      │
                  │               transcript on local disk       │
+                 │                (ephemeral, source of truth)   │
                  │                       │                      │
+                 │                       ▼                      │
+                 │            session-store.ts  append()        │
                  └───────────────────────┼──────────────────────┘
                                          ▼
-                              SessionStore (S3 / Redis / Postgres)
+                          durable storage (volume / S3 / Postgres)
+                          resume: load() ──► temp JSONL ──► subprocess
 ```
 
 ## How the code is split, and why
@@ -79,13 +83,14 @@ You cannot unit test a language model. You *can* unit test every control around 
 
 ```
 src/
-  contract.ts    types, response parsing, id sanitising   pure · 28 tests
-  options.ts     blast radius + tenant isolation          pure · 15 tests
-  semaphore.ts   the concurrency bound                    pure · 10 tests
-  agent.ts       prompts and the query() call             the model-facing part
-  server.ts      HTTP, health, lifecycle
+  contract.ts       types, response parsing, id sanitising  pure · 28 tests
+  options.ts        blast radius + tenant isolation         pure · 15 tests
+  semaphore.ts      the concurrency bound                   pure · 10 tests
+  session-store.ts  durable transcripts                          · 33 tests
+  agent.ts          prompts and the query() call            the model-facing part
+  server.ts         HTTP, health, lifecycle
 tests/
-  contract.test.ts   options.test.ts   semaphore.test.ts
+  contract.test.ts  options.test.ts  semaphore.test.ts  session-store.test.ts
 ```
 
 `options.ts` returns a plain object rather than a named SDK type, so it and its tests carry **no runtime dependency on the SDK** — the one `import type` is erased at compile time and emits nothing. Type checking still happens where it counts: `agent.ts` spreads the object into `query({ options })`, so the compiler validates the real shape at the call site.
@@ -108,7 +113,35 @@ For anything a user expects to resume, attach a **`SessionStore`** adapter so tr
 
 - **Transcripts only.** It mirrors transcripts, not `CLAUDE.md` or working-directory artifacts. Those need a mounted volume or an object-store sync.
 - **Mirror, not replacement.** The subprocess writes local disk first; the SDK forwards a copy to the store.
-- **Best-effort.** When a batch can't be delivered, the SDK emits `{ type: "system", subtype: "mirror_error" }` and continues. **Alert on those** if durability matters.
+- **Best-effort.** When a batch can't be delivered, the SDK emits `{ type: "system", subtype: "mirror_error" }` and continues. **Alert on those** — the service keeps returning confident answers while its memory develops holes, so nothing else will tell you. `agent.ts` logs it as `session.mirror_error`.
+
+### The adapter, in [`src/session-store.ts`](src/session-store.ts)
+
+The SDK ships exactly one implementation, `InMemorySessionStore`, and it's for tests — it dies with the process, same as local disk. You write the real one.
+
+So this example ships a working adapter. The contract logic is written once against a five-method storage seam, so porting to real infrastructure means writing five methods, not re-deriving the contract:
+
+```ts
+interface BlobBackend {
+  append(key, lines)   read(key)   write(key, body)
+  list(prefix)         remove(key)     stamp()   // the storage clock
+}
+```
+
+`VolumeBackend` (a mounted PVC/EFS/named volume) ships with it; the S3, Postgres and Redis mappings are documented at the bottom of the file, Postgres DDL included.
+
+**Turn it on** by setting `SESSION_STORE_DIR` and mounting a volume there. Unset, it returns `undefined` — the SDK's no-mirroring default. It deliberately does *not* fall back to an in-memory store: something that looks configured and silently loses everything on restart is worse than nothing, because you find out from a customer.
+
+**Six details the contract makes easy to get wrong**, each pinned by a test:
+
+| # | The mistake | What it costs you |
+|---|---|---|
+| 1 | Appending without treating `uuid` as an idempotency key | Retries and replays duplicate transcript lines, corrupting the resumed conversation |
+| 2 | Deduping entries that have *no* uuid | Titles and tags are updates, not duplicates — the session title freezes at its first value |
+| 3 | Leaving `projectKey` as the default sanitised cwd | Cross-tenant reads. Here the per-tenant `cwd` does double duty and partitions storage too |
+| 4 | Returning `[]` instead of `null` for an unwritten session | Resumes into a blank thread instead of starting a fresh one |
+| 5 | Taking summary `mtime` from entry timestamps | Entries are batched and arrive late; the staleness check silently breaks |
+| 6 | Not serialising the summary read-fold-write | Concurrent appends lose updates. `foldSessionSummary` is pure — locking is *your* job |
 
 ## Choosing a session pattern
 
@@ -160,7 +193,7 @@ The expensive error in triage is a silently swallowed urgent message, not an ext
 ## The tests, and what they are actually for
 
 ```bash
-npm test      # 53 tests, ~1s, no API key, no model call
+npm test      # 86 tests, ~2s, no API key, no model call
 ```
 
 These are not coverage theatre. Every assertion pins down a line that a future reader would reasonably delete.
@@ -174,6 +207,7 @@ These are not coverage theatre. Every assertion pins down a line that a future r
 | `options.test.ts` | A session id of `../../etc` becomes a directory outside its parent. |
 | `semaphore.test.ts` | A task that throws never releases its slot; the pool wedges after `MAX_CONCURRENT` failures and the container serves nothing while looking healthy. |
 | `semaphore.test.ts` | The bound admits `max + 1` under burst — an OOM kill, not a slow request. |
+| `session-store.test.ts` | A retried mirror batch duplicates transcript lines, or `load()` returns `[]` instead of `null` — the agent then reasons correctly about the wrong conversation. That never surfaces as an exception; it surfaces as a customer asking why it forgot. |
 
 **These tests were mutation tested.** Each control was deliberately broken in turn — truthy `needs_human`, deleted `settingSources`, deleted auto-memory flag, dropped env spread, unsanitised tenant path, slot released outside `finally` — and the suite was confirmed to go red for every one. A test that stays green when you break the thing it names is worse than no test, because it certifies the wrong thing.
 
@@ -193,7 +227,7 @@ cd examples/03-inbox-triage-service
 npm install
 export ANTHROPIC_API_KEY=sk-ant-...
 npm run dev          # tsx watch
-npm test             # 53 control tests — no API key needed
+npm test             # 86 control tests — no API key needed
 npm run typecheck    # src and tests, both strict
 npm run build && npm start
 ```
@@ -205,6 +239,7 @@ npm run build && npm start
 | `ANTHROPIC_API_KEY` | — | Required |
 | `PORT` | `8080` | HTTP port |
 | `MAX_CONCURRENT` | `4` | Concurrent agents — this is a **RAM** bound |
+| `SESSION_STORE_DIR` | — | Mirror transcripts here. Unset = local disk only, lost on restart |
 | `CLAUDE_CODE_ENABLE_TELEMETRY` | — | Set `1` for OTEL export |
 
 ## Deploy it
@@ -215,7 +250,7 @@ npm run build && npm start
 
 | You want | Change this |
 |---|---|
-| Real durable sessions | Add a `SessionStore` adapter (S3/Redis/Postgres) in `options.ts` |
+| Real durable sessions | Set `SESSION_STORE_DIR` and mount a volume — or swap `VolumeBackend` for S3/Postgres, five methods |
 | Different urgency semantics | `SYSTEM_PROMPT` in `agent.ts` — one place, whole service |
 | Different output fields | `contract.ts`, then extend `contract.test.ts` — the parser is the contract |
 | Slack instead of email | Keep `triage()`; swap `server.ts` for a Slack Events handler |
@@ -227,7 +262,8 @@ npm run build && npm start
 - **No auth.** Deliberately. Authentication belongs at a gateway in front of this; the agent should receive pre-authenticated requests. See [docs/05-security-and-governance.md](../../docs/05-security-and-governance.md).
 - **`MAX_CONCURRENT` is a memory bound.** Raising it without raising RAM gets you OOM kills, not throughput.
 - **In-memory semaphore.** Fine for one container. Across a fleet, the bound is per-pod, so size the fleet accordingly.
-- **No session eviction.** A long-lived container accumulates transcripts on local disk. Add a TTL sweep or use the hybrid pattern.
+- **No session eviction.** A long-lived container accumulates transcripts. The SDK never deletes from your store — retention is the adapter's job. Add a TTL sweep, an S3 lifecycle rule, or a scheduled cleanup to match your compliance window.
+- **`VolumeBackend` is single-writer.** Its uuid dedup is per-process, which covers the SDK's retries and import replays. Two replicas appending to one session need the dedup enforced in storage — the Postgres unique index in `session-store.ts` does exactly that. Sticky sessions mean you should not be in that situation anyway.
 
 ---
 
