@@ -1,9 +1,15 @@
 # =============================================================================
 # CI — keep the examples honest
 # =============================================================================
-# The point of CI on a teaching repo is not test coverage. It is making sure
-# that someone who clones this on a Tuesday can actually run it. So we check
-# the three things that break first: syntax, types, and the container build.
+# CI here does two jobs.
+#
+# First, make sure someone who clones this on a Tuesday can actually run it:
+# syntax, types, and the container build are the three things that break first.
+#
+# Second, defend the claims. This repo asserts that certain lines are security
+# controls -- an empty tool allow list, `settingSources: []`, a write guard, a
+# concurrency bound. An assertion nothing enforces is a comment. So both
+# examples ship tests that fail when a control is removed, and those run here.
 #
 # We deliberately do NOT run the agents in CI. They would need an API key and
 # would spend money on every push. Agent behaviour is validated by running the
@@ -78,6 +84,18 @@ jobs:
 
       - name: Typecheck
         run: npm run typecheck
+
+      # The control tests. Every assertion in tests/options.test.ts pins down a
+      # line that looks deletable to someone who does not know why it is there
+      # -- the empty tool allow list, settingSources, auto-memory, the
+      # per-tenant paths. tests/contract.test.ts pins the fail-safe parser, and
+      # tests/semaphore.test.ts pins the concurrency bound that stands between
+      # a burst and an OOM kill.
+      #
+      # None of them call a model or need an API key. The whole suite is about
+      # a second.
+      - name: Control tests (example 03)
+        run: npm test
 
       - name: Build
         run: npm run build
