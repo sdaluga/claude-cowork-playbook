@@ -43,6 +43,11 @@ data:
   # Multi-tenant hygiene, belt-and-braces alongside the in-code settings.
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1"
 
+  # Where the SessionStore mirrors transcripts. Backed by the PVC below --
+  # NOT by an emptyDir, which would defeat the entire purpose. Unset this and
+  # the service silently forgets every thread on each pod move.
+  SESSION_STORE_DIR: "/var/lib/triage/sessions"
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -125,6 +130,9 @@ spec:
               mountPath: /tmp/claude-config
             - name: tmp
               mountPath: /tmp/scratch
+            # The one mount that is not scratch.
+            - name: session-store
+              mountPath: /var/lib/triage/sessions
 
           # Liveness must NOT depend on a downstream service, or one slow
           # dependency turns into a cluster-wide restart loop.
@@ -152,9 +160,9 @@ spec:
             failureThreshold: 20
 
       volumes:
-        # emptyDir, not a PVC: this is scratch. Transcripts that must survive
-        # a pod move belong in a SessionStore (S3 / Redis / Postgres), not on
-        # a volume you have to keep alive.
+        # emptyDir for all three of these: they are scratch. The subprocess
+        # writes its transcript here first, but losing them costs nothing --
+        # the durable copy is the SessionStore mount below.
         - name: agent-work
           emptyDir:
             sizeLimit: 5Gi
@@ -164,6 +172,51 @@ spec:
         - name: tmp
           emptyDir:
             sizeLimit: 1Gi
+
+        # The durable one. This is the only volume here whose loss is a real
+        # incident.
+        - name: session-store
+          persistentVolumeClaim:
+            claimName: triage-sessions
+
+---
+# =============================================================================
+# The SessionStore volume
+# =============================================================================
+# ReadWriteMany, deliberately. The Deployment above runs 2+ replicas and the
+# HPA scales it further, so a ReadWriteOnce volume would bind to exactly one
+# pod and leave the rest unable to start.
+#
+# RWX means a networked filesystem: EFS on AWS, Filestore on GCP, Azure Files.
+# Check your storage class actually supports it -- most default classes do
+# NOT, and the symptom is pods stuck in Pending with no obvious cause.
+#
+# THE HONEST TRADE-OFF
+# --------------------
+# A shared filesystem is the simplest thing that works, not the best thing.
+# It gives you one more piece of stateful infrastructure to keep alive, and
+# per-process uuid dedup rather than dedup enforced in storage. Sticky
+# sessions mean two pods should never write the same session -- but "should"
+# is doing work in that sentence.
+#
+# At real scale, swap VolumeBackend for the Postgres backend documented in
+# src/session-store.ts (five methods) and delete this PVC entirely. The unique
+# index on (project_key, session_id, subpath, uuid) then enforces idempotency
+# across every replica, which is strictly stronger than what a filesystem can
+# give you. If you use S3 instead, drop `delete()` from the store and let a
+# lifecycle rule own retention.
+# =============================================================================
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: triage-sessions
+spec:
+  accessModes:
+    - ReadWriteMany
+  resources:
+    requests:
+      storage: 20Gi
+  # storageClassName: efs-sc     # set this -- the default class is usually RWO
 
 ---
 apiVersion: v1
