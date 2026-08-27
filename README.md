@@ -174,6 +174,14 @@ This is where hosting gets real, and it all follows from **one fact**: the SDK s
 
 Also: multi-tenant isolation, health vs. readiness, graceful shutdown, and **failing safe rather than closed** — an unparseable response becomes a human's queue item, never a swallowed message.
 
+> 🧪 **53 tests that fail when you delete a security control.**
+>
+> ```bash
+> npm test     # 53 tests, ~1s, no API key, no model call
+> ```
+>
+> The model call is one small file; everything that must be correct *regardless of what the model says* is pure and tested. Every assertion pins a line a future reader would reasonably delete — the empty tool allow list, `settingSources: []`, the auto-memory flag, the per-tenant paths, `needs_human` defaulting to `true`, the concurrency bound. **Mutation checked:** each control was broken in turn and the suite confirmed to go red. Writing them found a real bug in the session-id sanitiser. [The details are in the example README.](examples/03-inbox-triage-service/#the-tests-and-what-they-are-actually-for)
+
 ---
 
 ## Production
@@ -231,8 +239,12 @@ claude-cowork-playbook/
 │   │   ├── sample_documents/        #   includes a live injection test
 │   │   └── README.md
 │   └── 03-inbox-triage-service/     # TypeScript · long-running, sessions
-│       ├── src/agent.ts
-│       ├── src/server.ts            #   semaphore, health/ready, graceful stop
+│       ├── src/contract.ts          #   parsing + sanitising · pure, tested
+│       ├── src/options.ts           #   blast radius + isolation · pure, tested
+│       ├── src/semaphore.ts         #   the RAM bound · pure, tested
+│       ├── src/agent.ts             #   prompts and the query() call
+│       ├── src/server.ts            #   health/ready, graceful stop
+│       ├── tests/                   #   53 control tests, mutation checked
 │       ├── package.json
 │       └── README.md
 │
