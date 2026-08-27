@@ -43,7 +43,7 @@ Hosting the Agent SDK is therefore **not** like hosting a stateless API wrapper.
 
 | Consequence | What it means | Where it shows up |
 |---|---|---|
-| **One session = one subprocess** | Concurrency is bounded by RAM, not by your event loop. Budget ~1 GiB per concurrent agent as a *floor*. | The semaphore in `server.ts` |
+| **One session = one subprocess** | Concurrency is bounded by RAM, not by your event loop. Budget ~1 GiB per concurrent agent as a *floor*. | `semaphore.ts` |
 | **Local disk is ephemeral** | Transcripts don't survive a restart, a scale-down, or a reschedule. | `SessionStore` — see below |
 | **Sessions are sticky** | Behind a load balancer you must pin a session id to a container, or you resume against a subprocess that isn't there. | Consistent hashing at the LB |
 
@@ -72,6 +72,23 @@ Hosting the Agent SDK is therefore **not** like hosting a stateless API wrapper.
                                          ▼
                               SessionStore (S3 / Redis / Postgres)
 ```
+
+## How the code is split, and why
+
+You cannot unit test a language model. You *can* unit test every control around it — and in a hosted agent, the controls are where the incidents come from. So the model call is one small file and everything that must be correct regardless of what the model says is pure, importable, and tested.
+
+```
+src/
+  contract.ts    types, response parsing, id sanitising   pure · 28 tests
+  options.ts     blast radius + tenant isolation          pure · 15 tests
+  semaphore.ts   the concurrency bound                    pure · 10 tests
+  agent.ts       prompts and the query() call             the model-facing part
+  server.ts      HTTP, health, lifecycle
+tests/
+  contract.test.ts   options.test.ts   semaphore.test.ts
+```
+
+`options.ts` returns a plain object rather than a named SDK type, so it and its tests carry **no runtime dependency on the SDK** — the one `import type` is erased at compile time and emits nothing. Type checking still happens where it counts: `agent.ts` spreads the object into `query({ options })`, so the compiler validates the real shape at the call site.
 
 ## Sessions: the thing that makes triage actually work
 
@@ -116,7 +133,7 @@ That empty allow list is not an oversight. Triage is pure judgment over text tha
 
 ## Multi-tenant isolation
 
-Three settings, and skipping any of them leaks one tenant's context into another's prompt:
+Four controls, and skipping any one of them leaks one tenant's context into another's prompt:
 
 ```ts
 settingSources: [],                              // no CLAUDE.md, no host settings
@@ -140,6 +157,28 @@ Two places this service refuses to drop a message:
 
 The expensive error in triage is a silently swallowed urgent message, not an extra item in someone's queue. Note also that `needs_human` defaults to `true` when the field is missing — an omission is never read as "no human needed."
 
+## The tests, and what they are actually for
+
+```bash
+npm test      # 53 tests, ~1s, no API key, no model call
+```
+
+These are not coverage theatre. Every assertion pins down a line that a future reader would reasonably delete.
+
+| Test file | The incident it prevents |
+|---|---|
+| `contract.test.ts` | A model returns prose, truncated JSON, or an array — and the message is **swallowed** instead of escalated. Seven garbage inputs must all produce `needs_human: true`. |
+| `contract.test.ts` | `needs_human: parsed.needs_human !== false` gets "simplified" to `!!parsed.needs_human`. One character; every message missing the field is now silently marked *no human needed*. |
+| `options.test.ts` | Someone tidies away `settingSources: []` or `CLAUDE_CODE_DISABLE_AUTO_MEMORY`. Nothing fails — no error, no warning — until a host `CLAUDE.md` or one tenant's context appears inside another tenant's prompt. |
+| `options.test.ts` | The `...process.env` spread is dropped, and the subprocess loses `PATH` and `ANTHROPIC_API_KEY`. Fails in production, not on a laptop. |
+| `options.test.ts` | A session id of `../../etc` becomes a directory outside its parent. |
+| `semaphore.test.ts` | A task that throws never releases its slot; the pool wedges after `MAX_CONCURRENT` failures and the container serves nothing while looking healthy. |
+| `semaphore.test.ts` | The bound admits `max + 1` under burst — an OOM kill, not a slow request. |
+
+**These tests were mutation tested.** Each control was deliberately broken in turn — truthy `needs_human`, deleted `settingSources`, deleted auto-memory flag, dropped env spread, unsanitised tenant path, slot released outside `finally` — and the suite was confirmed to go red for every one. A test that stays green when you break the thing it names is worse than no test, because it certifies the wrong thing.
+
+Writing them also caught a real bug: `sanitize("///")` returned `"___"`, because the fallback only fired on an *empty* string. Safe, but a meaningless tenant directory. The guard now checks for alphanumeric content.
+
 ## Health vs. readiness
 
 Two endpoints, and they mean different things:
@@ -154,9 +193,12 @@ cd examples/03-inbox-triage-service
 npm install
 export ANTHROPIC_API_KEY=sk-ant-...
 npm run dev          # tsx watch
-npm run typecheck    # tsc --noEmit
+npm test             # 53 control tests — no API key needed
+npm run typecheck    # src and tests, both strict
 npm run build && npm start
 ```
+
+`npm test` is the one command here that needs no API key and spends no money. Run it first — if it fails on a fresh clone, the problem is your install, not your key.
 
 | Env var | Default | Purpose |
 |---|---|---|
@@ -173,10 +215,11 @@ npm run build && npm start
 
 | You want | Change this |
 |---|---|
-| Real durable sessions | Add a `SessionStore` adapter (S3/Redis/Postgres) to the options in `agent.ts` |
+| Real durable sessions | Add a `SessionStore` adapter (S3/Redis/Postgres) in `options.ts` |
 | Different urgency semantics | `SYSTEM_PROMPT` in `agent.ts` — one place, whole service |
+| Different output fields | `contract.ts`, then extend `contract.test.ts` — the parser is the contract |
 | Slack instead of email | Keep `triage()`; swap `server.ts` for a Slack Events handler |
-| Auto-send safe replies | Add a `send_reply` tool, gate it on `needs_human === false`, and log every send |
+| Auto-send safe replies | Add a `send_reply` tool, gate it on `needs_human === false`, log every send — and add a test that a missing `needs_human` never opens that gate |
 | Higher throughput | Raise `MAX_CONCURRENT` **only** alongside container memory, then scale horizontally with sticky sessions |
 
 ## Where this breaks

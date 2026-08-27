@@ -1,0 +1,15 @@
+{
+  // Type checking for the tests.
+  //
+  // The build config (tsconfig.json) deliberately compiles `src` only -- test
+  // files have no business in `dist`. But untyped tests rot: a rename in
+  // src/contract.ts should break the test file at check time, not at 3am.
+  //
+  // So: same strictness, wider net, no emit.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "."
+  },
+  "include": ["src/**/*.ts", "tests/**/*.ts"]
+}
