@@ -27,14 +27,24 @@
  * the mistake is.
  */
 
-import type { SettingSource } from "@anthropic-ai/claude-agent-sdk";
+import type { SessionStore, SettingSource } from "@anthropic-ai/claude-agent-sdk";
 
 import { sanitize } from "./contract.js";
 
 export const TRIAGE_MODEL = "claude-haiku-4-5-20251001";
 export const TRIAGE_FALLBACK_MODEL = "claude-sonnet-5";
 
-export function buildTriageOptions(sessionId: string, systemPrompt: string) {
+/**
+ * @param sessionStore Optional durable transcript mirror. Passed in rather
+ *   than constructed here so this file keeps its zero-runtime-SDK property --
+ *   the store implementation does import the SDK, and importing it here would
+ *   drag that dependency into the options tests for no benefit.
+ */
+export function buildTriageOptions(
+  sessionId: string,
+  systemPrompt: string,
+  sessionStore?: SessionStore,
+) {
   const tenant = sanitize(sessionId);
 
   return {
@@ -45,6 +55,19 @@ export function buildTriageOptions(sessionId: string, systemPrompt: string) {
     // every thread from scratch; triage with history knows this is the third
     // follow-up on an unanswered question, which is the actual signal.
     resume: sessionId,
+
+    // Where that history actually lives. Without a store, transcripts are
+    // JSONL on the container's local disk and every thread is forgotten on
+    // the next restart, scale-down or reschedule -- silently, because
+    // triage still returns a confident answer, just a worse one.
+    //
+    // The subprocess still writes locally first; this receives a copy.
+    // See session-store.ts.
+    sessionStore,
+    // 'batched' (the default) buffers and flushes at end-of-turn. 'eager'
+    // gives near-real-time delivery at one append() call per frame, which is
+    // only worth it if something outside this service tails the transcript.
+    sessionStoreFlush: "batched" as const,
 
     // ---- Blast radius ----------------------------------------------------
     // The empty allow list is not an oversight. Triage is pure judgment over
@@ -76,6 +99,12 @@ export function buildTriageOptions(sessionId: string, systemPrompt: string) {
       CLAUDE_CONFIG_DIR: `/tmp/claude-config/${tenant}`,
     },
     // 4. Per-tenant working directory.
+    //
+    // This one does double duty: the SessionStore's `projectKey` is derived
+    // from the resolved cwd, so a per-tenant cwd is also what keeps one
+    // tenant's stored transcripts out of another tenant's listing. There is
+    // no separate projectKey option -- change this line and you have changed
+    // the storage partition too.
     cwd: `/tmp/claude-work/${tenant}`,
   };
 }

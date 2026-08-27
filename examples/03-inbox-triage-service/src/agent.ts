@@ -44,6 +44,7 @@ import {
   type TriageResult,
 } from "./contract.js";
 import { buildTriageOptions } from "./options.js";
+import { createSessionStore } from "./session-store.js";
 
 export type { TriageRequest, TriageResult, Urgency } from "./contract.js";
 
@@ -113,17 +114,46 @@ Respond with exactly this JSON object and nothing else:
 // The call
 // --------------------------------------------------------------------------
 
+/**
+ * Built once, at module load, and shared across requests. The adapter is
+ * stateless apart from its per-session dedup cache — which is exactly the
+ * state you want shared, since a per-request store would re-read the uuid set
+ * from storage on every message.
+ */
+const sessionStore = createSessionStore();
+
 export async function triage(req: TriageRequest): Promise<TriageResult> {
   let raw = "";
 
   for await (const message of query({
     prompt: buildPrompt(req),
-    options: buildTriageOptions(req.sessionId, SYSTEM_PROMPT),
+    options: buildTriageOptions(req.sessionId, SYSTEM_PROMPT, sessionStore),
   })) {
     if (message.type === "assistant" && message.message?.content) {
       for (const block of message.message.content) {
         if ("text" in block) raw += block.text;
       }
+      continue;
+    }
+
+    // Transcript mirroring is BEST EFFORT. When a batch cannot be delivered
+    // after the SDK's bounded retry, it is dropped and this message is
+    // emitted; the subprocess carries on unaffected, so triage still returns
+    // a good answer and nothing looks wrong.
+    //
+    // That is precisely why it must be logged loudly. The symptom of ignoring
+    // it arrives days later as "why did it forget our thread", by which point
+    // the transcript is gone. Alert on this metric.
+    if (message.type === "system" && message.subtype === "mirror_error") {
+      console.error(
+        JSON.stringify({
+          evt: "session.mirror_error",
+          session: req.sessionId,
+          key: message.key,
+          error: message.error,
+          note: "transcript batch dropped — session history is now incomplete",
+        }),
+      );
     }
   }
 
