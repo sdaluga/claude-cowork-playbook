@@ -1,64 +1,51 @@
 /**
- * Example 03 — Inbox Triage Agent (the agent half)
- * ================================================
+ * Example 03 — Inbox Triage Agent (the model-facing half)
+ * ======================================================
  *
- * WHAT THIS FILE OWNS
- * -------------------
  * One function: `triage()`. Give it a message and a session id; it returns a
- * structured triage decision. Everything about HTTP, queues, and process
- * lifecycle lives in `server.ts`. Keeping that seam clean is most of what
- * makes an agent testable.
+ * structured triage decision.
+ *
+ * Everything that has to be correct whether or not the model behaves lives
+ * elsewhere, on purpose:
+ *
+ *   contract.ts   types, parsing, sanitising   — pure, exhaustively tested
+ *   options.ts    blast radius + isolation     — pure, asserted on in tests
+ *   semaphore.ts  concurrency bound            — pure, tested
+ *   server.ts     HTTP, lifecycle
+ *
+ * What's left in this file is the part that genuinely needs a model. Keeping
+ * that seam clean is most of what makes an agent testable: you cannot unit
+ * test a language model, but you can unit test every control around it.
  *
  * THE SESSION IDEA
  * ----------------
- * This is the first example in the repo where the agent has a memory that
- * outlives a single call. Each conversation thread maps to one `sessionId`.
- * Passing `resume: sessionId` means turn 4 still knows what happened in turn
- * 1 -- who the sender is, what was promised, what is still open.
+ * Each conversation thread maps to one `sessionId`. Passing `resume` means
+ * turn 4 still knows what happened in turn 1 — who the sender is, what was
+ * promised, what is still open.
  *
  * That matters more than it sounds. Triage without history re-litigates the
  * same thread every time it arrives. Triage with history says "this is the
- * third follow-up on an unanswered question" -- which is the actual signal.
+ * third follow-up on an unanswered question", which is the actual signal.
  *
  * WHERE SESSIONS LIVE
  * -------------------
  * By default, transcripts are JSONL files on local disk under
- * `~/.claude/projects/`. That is fine on your laptop and wrong in a container,
- * because the disk disappears on restart, scale-down, or a reschedule to a
- * different node.
- *
- * For anything a user expects to resume, attach a `SessionStore` adapter
- * (S3, Redis, Postgres) so transcripts are mirrored to durable storage.
- * `deploy/` in this repo shows the container side; the SDK's session-storage
- * docs cover the adapter interface.
+ * `~/.claude/projects/`. Fine on a laptop, wrong in a container: the disk
+ * disappears on restart, scale-down, or a reschedule to a different node.
+ * For anything a user expects to resume, attach a `SessionStore` adapter so
+ * transcripts are mirrored to durable storage.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-// --------------------------------------------------------------------------
-// The triage contract
-// --------------------------------------------------------------------------
+import {
+  parseTriage,
+  type TriageRequest,
+  type TriageResult,
+} from "./contract.js";
+import { buildTriageOptions } from "./options.js";
 
-export type Urgency = "now" | "today" | "this_week" | "no_action";
-
-export interface TriageResult {
-  urgency: Urgency;
-  category: string;
-  summary: string;
-  suggested_reply: string | null;
-  entities: string[];
-  needs_human: boolean;
-  reasoning: string;
-}
-
-export interface TriageRequest {
-  /** Stable id for the conversation thread. Same thread -> same id. */
-  sessionId: string;
-  /** Who sent it, as free text. */
-  from: string;
-  subject: string;
-  body: string;
-}
+export type { TriageRequest, TriageResult, Urgency } from "./contract.js";
 
 // --------------------------------------------------------------------------
 // Prompts
@@ -66,10 +53,10 @@ export interface TriageRequest {
 
 /**
  * The system prompt carries the judgment that is constant across every
- * message: what "urgent" means *here*, and what the agent is not allowed to
- * decide on its own. Tune this and you tune the whole service.
+ * message: what "urgent" means *here*, and what the agent may not decide on
+ * its own. Tune this and you tune the whole service.
  */
-const SYSTEM_PROMPT = `You triage inbound messages for a busy enterprise
+export const SYSTEM_PROMPT = `You triage inbound messages for a busy enterprise
 technology leader. You are decisive and you are calibrated.
 
 Urgency, and what each level actually means:
@@ -99,7 +86,7 @@ You always respond with a single JSON object and nothing else.`;
  * live in the system prompt, so a change of policy is a one-line diff there
  * rather than a rewrite here.
  */
-function buildPrompt(req: TriageRequest): string {
+export function buildPrompt(req: TriageRequest): string {
   return `Triage this message.
 
 From:    ${req.from}
@@ -131,46 +118,7 @@ export async function triage(req: TriageRequest): Promise<TriageResult> {
 
   for await (const message of query({
     prompt: buildPrompt(req),
-    options: {
-      systemPrompt: SYSTEM_PROMPT,
-
-      // ---- Session continuity -------------------------------------------
-      // `resume` rehydrates the thread. First message on a thread creates the
-      // session; every message after that continues it.
-      resume: req.sessionId,
-
-      // ---- Blast radius --------------------------------------------------
-      // An empty allow list is not a mistake. Triage is pure judgment over
-      // text that was handed to it. It needs no filesystem, no shell, and no
-      // network. The most secure tool is the one you did not grant.
-      allowedTools: [],
-      disallowedTools: ["Bash", "Write", "Edit", "WebFetch", "WebSearch"],
-
-      // ---- Bounds ---------------------------------------------------------
-      // With no tools, one turn is all it can take. This is a hard ceiling on
-      // both latency and cost per message.
-      maxTurns: 1,
-
-      // ---- Model ----------------------------------------------------------
-      // Triage is high-volume and latency-sensitive. Haiku is the right call
-      // and roughly an order of magnitude cheaper at inbox volume.
-      model: "claude-haiku-4-5-20251001",
-      fallbackModel: "claude-sonnet-5",
-
-      // ---- Multi-tenant hygiene -------------------------------------------
-      // Critical in a shared container. Without `settingSources: []` the agent
-      // reads CLAUDE.md and settings off the host filesystem, which is how one
-      // tenant's context ends up in another tenant's prompt.
-      settingSources: [],
-      env: {
-        ...process.env,
-        // Auto memory loads regardless of settingSources. Turn it off too.
-        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-        // Per-tenant config dir keeps the global ~/.claude.json unshared.
-        CLAUDE_CONFIG_DIR: `/tmp/claude-config/${sanitize(req.sessionId)}`,
-      },
-      cwd: `/tmp/claude-work/${sanitize(req.sessionId)}`,
-    },
+    options: buildTriageOptions(req.sessionId, SYSTEM_PROMPT),
   })) {
     if (message.type === "assistant" && message.message?.content) {
       for (const block of message.message.content) {
@@ -180,64 +128,4 @@ export async function triage(req: TriageRequest): Promise<TriageResult> {
   }
 
   return parseTriage(raw);
-}
-
-// --------------------------------------------------------------------------
-// Parsing
-// --------------------------------------------------------------------------
-
-/**
- * Never trust the shape of model output. Parse it the way you would parse a
- * request body from the internet: defensively, with a fallback that fails
- * *safe* rather than failing closed.
- *
- * Failing safe here means: when we cannot read the response, we do not drop
- * the message. We escalate it to a human. The expensive error in triage is a
- * silently swallowed urgent message, not an extra item in someone's queue.
- */
-function parseTriage(raw: string): TriageResult {
-  const fallback: TriageResult = {
-    urgency: "today",
-    category: "other",
-    summary: "Triage output could not be parsed; routed to a human.",
-    suggested_reply: null,
-    entities: [],
-    needs_human: true,
-    reasoning: "The agent response was not valid JSON.",
-  };
-
-  // Models sometimes wrap JSON in a fenced code block despite instructions.
-  // Strip fences, then take the outermost object.
-  const cleaned = raw.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start === -1 || end === -1) return fallback;
-
-  try {
-    const parsed = JSON.parse(cleaned.slice(start, end + 1));
-    const validUrgency: Urgency[] = ["now", "today", "this_week", "no_action"];
-
-    return {
-      urgency: validUrgency.includes(parsed.urgency)
-        ? parsed.urgency
-        : "today",
-      category: String(parsed.category ?? "other"),
-      summary: String(parsed.summary ?? "").slice(0, 400),
-      suggested_reply: parsed.suggested_reply ?? null,
-      entities: Array.isArray(parsed.entities)
-        ? parsed.entities.map(String).slice(0, 20)
-        : [],
-      // Default to escalating. If the model omitted the field, we do not
-      // assume it meant "no human needed."
-      needs_human: parsed.needs_human !== false,
-      reasoning: String(parsed.reasoning ?? "").slice(0, 600),
-    };
-  } catch {
-    return fallback;
-  }
-}
-
-/** Session ids reach the filesystem as directory names. Sanitise them. */
-function sanitize(id: string): string {
-  return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64) || "default";
 }
