@@ -33,6 +33,11 @@ services:
       # as a floor, measured against your real session length and tool load.
       MAX_CONCURRENT: "3"
 
+      # Durable transcripts. Unset this and sessions live only on the
+      # container's local disk, which means every thread is forgotten on the
+      # next restart -- silently, because triage still answers, just worse.
+      SESSION_STORE_DIR: /var/lib/triage/sessions
+
       # Telemetry — on when you run the observability profile.
       CLAUDE_CODE_ENABLE_TELEMETRY: ${CLAUDE_CODE_ENABLE_TELEMETRY:-0}
       OTEL_EXPORTER_OTLP_ENDPOINT: http://collector:4318
@@ -41,12 +46,17 @@ services:
       OTEL_METRICS_EXPORTER: otlp
       OTEL_LOGS_EXPORTER: otlp
 
-    # Session transcripts and per-tenant working directories live here. In
-    # compose this is a named volume so a `docker compose restart` keeps them.
-    # In production, local disk is NOT durable -- use a SessionStore adapter.
+    # Two different things, and the distinction matters.
+    #
+    # /tmp/*      per-tenant cwd and CLAUDE_CONFIG_DIR. SCRATCH. The
+    #             subprocess writes its transcript here first, but this disk
+    #             is expendable -- in Kubernetes it is an emptyDir.
+    # /var/lib/*  the SessionStore's durable copy. This is the one that has
+    #             to survive the container. In Kubernetes, a PVC.
     volumes:
       - agent-scratch:/tmp/claude-work
       - agent-config:/tmp/claude-config
+      - session-store:/var/lib/triage/sessions
 
     deploy:
       resources:
@@ -94,3 +104,4 @@ services:
 volumes:
   agent-scratch:
   agent-config:
+  session-store:

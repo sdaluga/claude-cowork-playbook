@@ -32,7 +32,8 @@ Almost every unusual line in these files traces back to that one sentence:
 | `tini` as PID 1 | The agent forks children. Without an init that reaps them, zombies accumulate until the PID table gives up. |
 | `pids_limit` in compose | A runaway loop should exhaust one container's process table, not the host's. |
 | `maxUnavailable: 0` | A rolling update shouldn't take capacity away while long sessions are in flight. |
-| `emptyDir`, not a PVC | Local disk is scratch. Durable transcripts belong in a `SessionStore`. |
+| `emptyDir` for `/tmp` | The subprocess's cwd and config dir are scratch. Losing them costs nothing. |
+| A PVC for the `SessionStore` | Transcripts are the one thing that must outlive the pod. `SESSION_STORE_DIR` points at it. |
 
 ## Sizing
 
