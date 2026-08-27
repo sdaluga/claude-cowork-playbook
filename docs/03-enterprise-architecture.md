@@ -163,7 +163,9 @@ Three kinds of agent state default to local disk, and **none of them survive a c
 | `CLAUDE.md` memory | `~/.claude/CLAUDE.md` + session cwd | ❌ → mounted volume or object-store sync |
 | Working-directory artifacts | The session's cwd | ❌ → same |
 
-`SessionStore` mirrors **transcripts only**, and mirror writes are **best-effort** — a failed batch emits `{ type: "system", subtype: "mirror_error" }` and the query continues. Alert on those.
+`SessionStore` mirrors **transcripts only**, and mirror writes are **best-effort** — a failed batch emits `{ type: "system", subtype: "mirror_error" }` and the query continues. Alert on those: the service keeps answering correctly while its memory quietly develops holes, so nothing else will tell you.
+
+A working adapter is in this repo at [`examples/03-inbox-triage-service/src/session-store.ts`](../examples/03-inbox-triage-service/src/session-store.ts), with the six contract details that are easy to get wrong — uuid idempotency, `null` vs `[]`, storage-clock `mtime`, tenant-scoped `projectKey`, serialised summary folds, and no-uuid entries — each pinned by a test.
 
 ### 4. How is one tenant kept out of another's context?
 

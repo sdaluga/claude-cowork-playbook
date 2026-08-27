@@ -68,7 +68,9 @@ In production, route egress through a **proxy that enforces a domain allowlist, 
 
 ## Step 4 — Persist sessions
 
-Default local disk is lost on restart, scale-down, or a move to a different node. For any session a user expects to resume, mirror transcripts with a **`SessionStore`** adapter (S3, Redis, Postgres reference implementations exist, plus a conformance suite for your own).
+Default local disk is lost on restart, scale-down, or a move to a different node. For any session a user expects to resume, mirror transcripts with a **`SessionStore`** adapter.
+
+The SDK ships one implementation, `InMemorySessionStore`, which is for tests — it dies with the process, same as local disk. Everything else you write yourself. This repo has a working one: [`examples/03-inbox-triage-service/src/session-store.ts`](../examples/03-inbox-triage-service/src/session-store.ts), which implements the contract once against a five-method storage seam, ships a mounted-volume backend, and documents the S3 / Postgres / Redis mappings — including the Postgres DDL. It is covered by 33 tests, [each one named for the mistake it prevents](../examples/03-inbox-triage-service/#the-tests-and-what-they-are-actually-for).
 
 Three behaviours to internalise:
 
